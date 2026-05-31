@@ -1,0 +1,56 @@
+# Gradle / Android build outputs
+.gradle/
+.kotlin/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# Local machine configuration / secrets
+local.properties
+.env
+.env.*
+*.env
+.dev.vars
+proxy/.dev.vars
+proxy/.env
+proxy/.env.*
+
+# Android Studio / IntelliJ
+.idea/
+*.iws
+*.iml
+*.ipr
+.navigation/
+captures/
+*.hprof
+
+# Signing keys / app secrets
+*.jks
+*.keystore
+google-services.json
+
+# External native build
+.externalNativeBuild/
+.cxx/
+
+# Node / Cloudflare Worker local state
+node_modules/
+proxy/node_modules/
+.wrangler/
+proxy/.wrangler/
+
+# Build/distribution artifacts: use GitHub Releases, not git history
+*.apk
+*.aab
+*.ap_
+releases/
+
+# Logs / OS / temp
+*.log
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+*.swp
+*~

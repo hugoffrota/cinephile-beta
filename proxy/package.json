@@ -1,0 +1,14 @@
+{
+  "name": "cinephile-proxy",
+  "version": "1.0.0",
+  "description": "Edge-deployed TMDb proxy with caching and rate limiting for Cinephile",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240501.0",
+    "wrangler": "^3.0.0"
+  }
+}
