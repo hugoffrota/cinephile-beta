@@ -236,6 +236,10 @@ class MovieRepository(private val movieDao: MovieDao) {
         return movieDao.getCandidateMovies()
     }
 
+    suspend fun getUserMoviesOnce(): List<MovieEntity> {
+        return movieDao.getUserMoviesOnce()
+    }
+
     suspend fun updateEmbedding(tmdbId: Int, embedding: String) {
         movieDao.updateEmbedding(tmdbId, embedding)
     }

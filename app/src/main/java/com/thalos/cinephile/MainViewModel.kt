@@ -12,6 +12,7 @@ import com.thalos.cinephile.data.repository.LetterboxdCsvParser
 import com.thalos.cinephile.data.repository.MovieRepository
 import com.thalos.cinephile.data.local.UserProfileRepository
 import com.thalos.cinephile.data.remote.GenreMap
+import com.thalos.cinephile.domain.engine.BlindSpotAnalyzer
 import com.thalos.cinephile.domain.engine.EmbeddingEngine
 import com.thalos.cinephile.domain.engine.RecommendationEngine
 import com.thalos.cinephile.domain.engine.SearchQueryParser
@@ -39,6 +40,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _recommendations = MutableStateFlow<List<RecommendationEngine.ScoredMovie>>(emptyList())
     val recommendations: StateFlow<List<RecommendationEngine.ScoredMovie>> = _recommendations.asStateFlow()
+
+    private val _blindSpots = MutableStateFlow<List<BlindSpotAnalyzer.BlindSpot>>(emptyList())
+    val blindSpots: StateFlow<List<BlindSpotAnalyzer.BlindSpot>> = _blindSpots.asStateFlow()
+
+    private val _isLoadingBlindSpots = MutableStateFlow(false)
+    val isLoadingBlindSpots: StateFlow<Boolean> = _isLoadingBlindSpots.asStateFlow()
 
     // Deep pool of scored candidates. Visible list is a filtered/sliced view.
     private var recommendationPool: List<RecommendationEngine.ScoredMovie> = emptyList()
@@ -104,6 +111,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (onboardingDone) {
                 _uiState.value = UiState.Ready
                 loadRecommendations()
+                loadBlindSpots()
                 fetchTrending()
                 fetchUpcoming()
             } else {
@@ -399,7 +407,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // Fallback: pad with random popular candidates if scored pool is shallow
                 if (visible.size < 15) {
                     val allCandidates = withContext(Dispatchers.IO) {
-                        movieRepository.getAllMovies().filter { it.isFromUser == false && it.tmdbId !in dismissed && it.tmdbId !in watchlisted && (!hideObscure || (it.voteCount ?: 0) >= 500) }
+                        movieRepository.getAllMovies().filter {
+                            it.isFromUser == false &&
+                            it.tmdbId !in dismissed &&
+                            it.tmdbId !in watchlisted &&
+                            (!hideObscure || (it.voteCount ?: 0) >= 500) &&
+                            it.voteAverage >= 6.5
+                        }
                     }
                     val existingIds = visible.map { it.movie.tmdbId }.toSet()
                     val extras = allCandidates
@@ -416,7 +430,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 runtimeScore = 0.0,
                                 ratingBoost = (candidate.voteAverage / 10.0).coerceIn(0.0, 1.0),
                                 totalScore = 0.5,
-                                explanation = "Popular discovery"
+                                explanation = popularFallbackExplanation(candidate)
                             )
                         }
                     visible = visible + extras
@@ -449,6 +463,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .shuffled()
                 .take(15)
             _isLoadingRecs.value = false
+        }
+    }
+
+    fun loadBlindSpots() {
+        viewModelScope.launch {
+            _isLoadingBlindSpots.value = true
+            try {
+                val userMovies = withContext(Dispatchers.IO) { movieRepository.getUserMoviesOnce() }
+                val candidates = withContext(Dispatchers.IO) { movieRepository.getCandidateMovies() }
+                val currentRecommendationIds = _recommendations.value.map { it.movie.tmdbId }.toSet()
+                _blindSpots.value = BlindSpotAnalyzer.analyze(
+                    userMovies = userMovies,
+                    candidates = candidates,
+                    excludedIds = currentRecommendationIds
+                )
+            } catch (_: Exception) {
+                _blindSpots.value = emptyList()
+            }
+            _isLoadingBlindSpots.value = false
         }
     }
 
@@ -488,7 +521,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             runtimeScore = 0.0,
                             ratingBoost = (candidate.voteAverage / 10.0).coerceIn(0.0, 1.0),
                             totalScore = 0.5,
-                            explanation = "Popular discovery"
+                            explanation = popularFallbackExplanation(candidate)
                         )
                     }
                 updated = updated + extras
@@ -518,6 +551,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    private fun popularFallbackExplanation(candidate: MovieEntity): String {
+        val genre = candidate.genres
+            .split(",")
+            .mapNotNull { raw -> raw.trim().toIntOrNull()?.let(GenreMap::name) }
+            .firstOrNull { it != "Unknown" }
+        val year = candidate.releaseDate?.take(4)
+        val quality = when {
+            candidate.voteAverage >= 8.0 && (candidate.voteCount ?: 0) >= 500 -> "highly-rated"
+            candidate.popularity >= 50.0 -> "popular"
+            else -> "fresh"
+        }
+        return listOfNotNull(quality.replaceFirstChar { it.uppercase() }, genre, year)
+            .joinToString(" ") + " discovery"
+    }
+
 
     fun fetchSimilarMovies(tmdbId: Int) {
         viewModelScope.launch {
@@ -847,6 +896,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             userRepo.clearAll()
             _uiState.value = UiState.Onboarding
             _recommendations.value = emptyList()
+            _blindSpots.value = emptyList()
             _trendingMovies.value = emptyList()
             _upcomingMovies.value = emptyList()
             dismissedDao.clearAllDismissed()

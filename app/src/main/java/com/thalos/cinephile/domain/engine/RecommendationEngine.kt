@@ -2,6 +2,7 @@ package com.thalos.cinephile.domain.engine
 
 import com.thalos.cinephile.data.local.MovieDao
 import com.thalos.cinephile.data.local.MovieEntity
+import com.thalos.cinephile.data.remote.GenreMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -65,15 +66,17 @@ class RecommendationEngine(
     }
 
     private fun buildProfile(userMovies: List<MovieEntity>, watchlistedMovies: List<MovieEntity> = emptyList()): UserProfile {
-        val ratedMovies = userMovies.filter { it.userRating != null && it.userRating >= 3.0 }
-        // Blend watchlisted movies in with a default rating of 3.5 (indicates interest)
-        val watchlistedWithRating = watchlistedMovies.map {
-            if (it.userRating != null) it else it.copy(userRating = 3.5)
-        }
-        val allMovies = ratedMovies + watchlistedWithRating
+        // Build "For You" from explicit positive taste, not from everything the user merely watched.
+        // Imported Letterboxd ratings are stored on a 1-10 scale, so 7+ is a real like.
+        val likedMovies = userMovies.filter { (it.userRating ?: 0.0) >= 7.0 }
+            .ifEmpty { userMovies.filter { (it.userRating ?: 0.0) >= 6.0 } }
+        // Blend watchlisted movies in only as a weak interest signal; ratings should dominate.
+        val watchlistedWithRating = watchlistedMovies
+            .filter { watched -> userMovies.none { it.tmdbId == watched.tmdbId } }
+            .map { it.copy(userRating = (it.userRating ?: 4.0).coerceAtMost(5.0)) }
+        val allMovies = likedMovies + watchlistedWithRating
         if (allMovies.isEmpty()) {
-            // Use all movies if none rated highly
-            return buildProfileFromMovies(userMovies)
+            return buildProfileFromMovies(userMovies.filter { it.userRating != null }.ifEmpty { userMovies })
         }
         return buildProfileFromMovies(allMovies)
     }
@@ -129,13 +132,13 @@ class RecommendationEngine(
         userMovies: List<MovieEntity>,
         dismissedMovies: List<MovieEntity> = emptyList()
     ): ScoredMovie {
-        // Semantic similarity (40%)
+        // Semantic similarity — primary signal for "based on what I rated"
         val candidateEmbedding = if (candidate.embedding.isNotBlank()) {
             embeddingEngine.parseEmbedding(candidate.embedding)
         } else FloatArray(384) { 0f }
         val semanticScore = embeddingEngine.cosineSimilarity(profile.embedding, candidateEmbedding).toDouble()
 
-        // Genre match (25%)
+        // Genre match — explicit genre taste from liked/rated movies
         val candidateGenres = candidate.genres.split(",").filter { it.isNotBlank() }
         val genreOverlap = candidateGenres.sumOf { profile.genreWeights[it] ?: 0.0 }
         val genreScore = if (candidateGenres.isNotEmpty()) genreOverlap / candidateGenres.size else 0.0
@@ -177,11 +180,12 @@ class RecommendationEngine(
         } else 0.0
 
         val totalScore = (
-            semanticScore * 0.40 +
+            semanticScore * 0.50 +
             genreScore * 0.25 +
-            castScore * 0.15 +
-            eraScore * 0.10 +
-            runtimeScore * 0.10 -
+            castScore * 0.10 +
+            eraScore * 0.05 +
+            runtimeScore * 0.03 +
+            ratingBoost * 0.07 -
             dismissalPenalty
         ).coerceAtLeast(0.0)
 
@@ -199,22 +203,65 @@ class RecommendationEngine(
         profile: UserProfile
     ): String {
         val parts = mutableListOf<String>()
-        if (semanticScore > 0.65) parts.add("matches the tone of your highly-rated films")
-        if (genreScore > 0.6) parts.add("aligns with your preferred genres")
-        if (castScore > 0.5) {
-            val dir = candidate.director
-            if (dir != null && profile.favoriteDirectors.contains(dir)) parts.add("from director $dir")
-            else parts.add("features familiar cast")
+        val candidateGenrePairs = candidate.genres
+            .split(",")
+            .mapNotNull { raw ->
+                val id = raw.trim()
+                id.toIntOrNull()?.let { tmdbId -> id to GenreMap.name(tmdbId) }
+            }
+            .filter { it.second != "Unknown" }
+        val candidateGenres = candidateGenrePairs.map { it.second }
+        val preferredGenrePair = candidateGenrePairs.maxByOrNull { pair -> profile.genreWeights[pair.first] ?: 0.0 }
+        val preferredGenre = preferredGenrePair?.second
+        val preferredGenreWeight = preferredGenrePair?.let { profile.genreWeights[it.first] ?: 0.0 } ?: 0.0
+        val candidateYear = candidate.releaseDate?.take(4)?.toIntOrNull()
+        val candidateDecade = candidateYear?.let { (it / 10) * 10 }
+
+        if (semanticScore > 0.35) {
+            parts.add("similar tone to your top-rated films")
         }
-        if (eraScore > 0.7) parts.add("from your preferred era")
-        if (parts.isEmpty()) parts.add("a well-rated discovery outside your usual picks")
-        return parts.joinToString("; ").replaceFirstChar { it.uppercase() }
+
+        if (preferredGenre != null && preferredGenreWeight > 0.0) {
+            parts.add("leans into your $preferredGenre taste")
+        } else if (genreScore > 0.05 && preferredGenre != null) {
+            parts.add("has some $preferredGenre overlap")
+        }
+
+        val director = candidate.director?.takeIf { it.isNotBlank() }
+        if (director != null && profile.favoriteDirectors.contains(director)) {
+            parts.add("directed by $director")
+        } else if (castScore > 0.15) {
+            parts.add("shares familiar cast")
+        }
+
+        if (candidateDecade != null && eraScore > 0.8) {
+            parts.add("fits your ${candidateDecade}s streak")
+        } else if (candidateDecade != null && profile.preferredDecades.isNotEmpty()) {
+            val closest = profile.preferredDecades.minByOrNull { abs(it - candidateDecade) }
+            if (closest != null && abs(closest - candidateDecade) <= 20) {
+                parts.add("near your ${closest}s comfort zone")
+            }
+        }
+
+        if (candidate.voteAverage >= 8.0 && (candidate.voteCount ?: 0) >= 500) {
+            parts.add("strong audience validation")
+        } else if (candidate.popularity >= 50.0) {
+            parts.add("currently getting attention")
+        }
+
+        if (parts.isEmpty()) {
+            val genreLabel = candidateGenres.firstOrNull()?.lowercase() ?: "offbeat"
+            val yearLabel = candidateYear?.let { " from $it" } ?: ""
+            parts.add("a $genreLabel discovery$yearLabel outside your usual lane")
+        }
+
+        return parts.distinct().take(3).joinToString("; ").replaceFirstChar { it.uppercase() }
     }
 
     private fun applyMMR(scoredMovies: List<ScoredMovie>, count: Int): List<ScoredMovie> {
         val remaining = scoredMovies.sortedByDescending { it.totalScore }.toMutableList()
         val selected = mutableListOf<ScoredMovie>()
-        val lambda = 0.5 // Balance between relevance and diversity
+        val lambda = 0.78 // Favor taste relevance; keep only light diversity so "For You" stays personal.
 
         while (selected.size < count && remaining.isNotEmpty()) {
             val best = remaining.maxByOrNull { item ->

@@ -261,9 +261,9 @@ fun GenreFilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-fun CompactMovieCard(movie: MovieEntity, onClick: () -> Unit) {
+fun CompactMovieCard(movie: MovieEntity, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),

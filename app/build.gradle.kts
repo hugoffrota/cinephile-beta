@@ -14,8 +14,8 @@ android {
         applicationId = "com.thalos.cinephile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.0.0-beta2"
+        versionCode = 13
+        versionName = "1.0.0-beta4-remove-trending-now"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
