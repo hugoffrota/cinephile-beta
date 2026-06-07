@@ -15,7 +15,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 13
-        versionName = "1.0.0-beta4-remove-trending-now"
+        versionName = "1.0.0-beta4-blind-spot"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
